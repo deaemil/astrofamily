@@ -4088,3 +4088,19 @@ code {
     width: 24px;
   }
 }
+.place-results button.highlighted {
+  background: #f0e7f6;
+}
+.field-help[role="status"] {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.place-field ~ .notice {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.place-field ~ .notice > span {
+  flex: 1;
+  min-width: 180px;
+}

@@ -11,3 +11,5 @@ server/ephe/
 test-results/
 playwright-report/
 *.tsbuildinfo
+
+.cache/

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Modal } from "./ui";
 import { manualPosition, formatPosition } from "../astro";
+import { searchPlaces, type Place } from "../places";
 import {
   POINTS,
   SIGNS,
@@ -37,14 +38,6 @@ const blankRow = (): ManualRow => ({
   status: "confirmed",
   note: "",
 });
-interface Place {
-  name: string;
-  country: string;
-  countryCode?: string;
-  lat: number;
-  lon: number;
-  timezone: string;
-}
 export default function PersonForm({
   person,
   settings,
@@ -80,6 +73,11 @@ export default function PersonForm({
     [places, setPlaces] = useState<Place[]>([]),
     [placeWarning, setPlaceWarning] = useState(""),
     [citySearch, setCitySearch] = useState("");
+  const [placeSearching, setPlaceSearching] = useState(false);
+  const [placeUnavailable, setPlaceUnavailable] = useState(false);
+  const [placeRetry, setPlaceRetry] = useState(0);
+  const [activePlace, setActivePlace] = useState(-1);
+  const cityInput = useRef<HTMLInputElement>(null);
   const [advanced, setAdvanced] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -108,47 +106,61 @@ export default function PersonForm({
   const originalRows = useRef(rows);
   const setB = <K extends keyof Birth>(key: K, value: Birth[K]) =>
     setBirth((b) => ({ ...b, [key]: value }));
+  function choosePlace(p: Place) {
+    setBirth((b) => ({
+      ...b,
+      city: p.name,
+      country: p.country,
+      lat: p.lat,
+      lon: p.lon,
+      timezone: p.timezone,
+    }));
+    setCitySearch("");
+    setPlaceChosen(true);
+    setPlaces([]);
+    setPlaceWarning("");
+    setPlaceUnavailable(false);
+    setActivePlace(-1);
+    setError("");
+  }
   useEffect(() => {
-    if (citySearch.length < 2) {
-      setPlaces([]);
+    setPlaces([]);
+    setActivePlace(-1);
+    setPlaceWarning("");
+    setPlaceUnavailable(false);
+    if (citySearch.trim().length < 2) {
+      setPlaceSearching(false);
       return;
     }
     const controller = new AbortController();
+    setPlaceSearching(true);
     const t = setTimeout(async () => {
       try {
-        const r = await fetch(
-          `/api/places?q=${encodeURIComponent(citySearch)}`,
-          { signal: controller.signal },
-        );
-        const d = await r.json();
-        setPlaces(
-          (d.places || []).map((p: Place) => ({
-            ...p,
-            country: p.countryCode
-              ? new Intl.DisplayNames(["bg"], { type: "region" }).of(
-                  p.countryCode,
-                ) || p.country
-              : p.country,
-          })),
-        );
+        const result = await searchPlaces(citySearch, controller.signal);
+        if (controller.signal.aborted) return;
+        setPlaces(result.places);
         setPlaceWarning(
-          d.warning ||
-            (!d.places?.length
+          result.warning ||
+            (!result.places.length
               ? "Няма намерени места. Опитайте друго изписване или въведете координати ръчно."
               : ""),
         );
-      } catch (e) {
-        if (!controller.signal.aborted)
+      } catch {
+        if (!controller.signal.aborted) {
+          setPlaceUnavailable(true);
           setPlaceWarning(
-            "Търсенето не е достъпно. Въведете координати ръчно.",
+            "Няма връзка с изчислителния сървър. Оставете терминала с „npm run dev“ отворен и натиснете „Опитай отново“.",
           );
+        }
+      } finally {
+        if (!controller.signal.aborted) setPlaceSearching(false);
       }
     }, 350);
     return () => {
       clearTimeout(t);
       controller.abort();
     };
-  }, [citySearch]);
+  }, [citySearch, placeRetry]);
   const updateRow = (point: Point, patch: Partial<ManualRow>) =>
     setRows((r) => ({ ...r, [point]: { ...r[point], ...patch } }));
   async function submit(e?: FormEvent, skipCalculation = false) {
@@ -221,10 +233,16 @@ export default function PersonForm({
             !/^([01]\d|2[0-3]):[0-5]\d$/.test(birth.time))
         )
           throw new Error("Въведете валидни дата (1600–2399 г.) и час.");
-        if (!placeChosen)
+        if (!placeChosen) {
+          cityInput.current?.focus();
+          if (placeUnavailable)
+            throw new Error(
+              "Мястото още не е избрано, защото няма връзка със сървъра. Стартирайте „npm run dev“, потърсете града отново и го изберете от списъка.",
+            );
           throw new Error(
-            "Изберете място от списъка или потвърдете ръчно координатите.",
+            "Натиснете името на града в списъка под полето или използвайте стрелките и Enter. За ръчни координати отворете „Преглед и корекция“ и ги потвърдете.",
           );
+        }
         if (skipCalculation) next.stale = true;
         else {
           const r = await fetch("/api/calculate", {
@@ -369,8 +387,40 @@ export default function PersonForm({
                 <label className="field">
                   Място на раждане
                   <div className="input-icon">
-                    <MapPin size={17} />
+                    <MapPin size={17} aria-hidden="true" />
                     <input
+                      ref={cityInput}
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={places.length > 0}
+                      aria-controls="birth-place-results"
+                      aria-activedescendant={
+                        activePlace >= 0
+                          ? `birth-place-${activePlace}`
+                          : undefined
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "ArrowDown" && places.length) {
+                          e.preventDefault();
+                          setActivePlace((i) => (i + 1) % places.length);
+                        }
+                        if (e.key === "ArrowUp" && places.length) {
+                          e.preventDefault();
+                          setActivePlace(
+                            (i) => (i - 1 + places.length) % places.length,
+                          );
+                        }
+                        if (e.key === "Enter" && places.length) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          choosePlace(places[Math.max(0, activePlace)]);
+                        }
+                        if (e.key === "Escape" && places.length) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setCitySearch("");
+                        }
+                      }}
                       placeholder="Потърсете град, напр. София"
                       autoComplete="off"
                       value={birth.city}
@@ -383,25 +433,22 @@ export default function PersonForm({
                   </div>
                 </label>
                 {places.length > 0 && (
-                  <div className="place-results">
+                  <div
+                    className="place-results"
+                    role="listbox"
+                    aria-label="Намерени населени места"
+                    id="birth-place-results"
+                  >
                     {places.map((p, i) => (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => {
-                          setBirth((b) => ({
-                            ...b,
-                            city: p.name,
-                            country: p.country,
-                            lat: p.lat,
-                            lon: p.lon,
-                            timezone: p.timezone,
-                          }));
-                          setCitySearch("");
-                          setPlaceChosen(true);
-                          setPlaces([]);
-                          setPlaceWarning("");
-                        }}
+                        role="option"
+                        id={`birth-place-${i}`}
+                        aria-selected={activePlace === i}
+                        className={activePlace === i ? "highlighted" : ""}
+                        onMouseEnter={() => setActivePlace(i)}
+                        onClick={() => choosePlace(p)}
                       >
                         <MapPin size={16} />
                         <span>
@@ -415,13 +462,38 @@ export default function PersonForm({
                   </div>
                 )}
               </div>
+              {placeSearching && (
+                <p className="field-help" role="status">
+                  <LoaderCircle size={13} className="spin" aria-hidden="true" />{" "}
+                  Търсене на места…
+                </p>
+              )}
+              {!placeChosen && places.length > 0 && (
+                <p className="field-help">
+                  Натиснете града в списъка или го изберете със стрелките и
+                  Enter.
+                </p>
+              )}
               {placeChosen && (
                 <p className="field-help">
                   {birth.country} · {birth.lat.toFixed(4)}°,{" "}
                   {birth.lon.toFixed(4)}° · {birth.timezone}
                 </p>
               )}
-              {placeWarning && <p className="notice">{placeWarning}</p>}
+              {placeWarning && (
+                <div className="notice" role="status">
+                  <span>{placeWarning}</span>
+                  {placeUnavailable && (
+                    <button
+                      type="button"
+                      className="button secondary small"
+                      onClick={() => setPlaceRetry((i) => i + 1)}
+                    >
+                      Опитай отново
+                    </button>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 className="text-button"

@@ -116,7 +116,7 @@ test("реална натална карта, преизчисляване и н
   await modal.getByLabel("Дата на раждане").fill("1990-07-15");
   await modal.getByLabel("Местен час").fill("10:30");
   await modal.getByPlaceholder("Потърсете град, напр. София").fill("София");
-  await modal.getByRole("button", { name: /София България/ }).click();
+  await modal.getByRole("option", { name: /София България/ }).click();
   await modal.getByRole("button", { name: "Изчисли и запази" }).click();
   await expect(modal).toBeHidden();
   await expect(page.getByLabel("Натална карта", { exact: true })).toBeVisible();
@@ -229,13 +229,11 @@ test("JSON възстановяване след преглед и отказ п
   const archive = JSON.parse(Buffer.concat(chunks).toString());
   archive.people[0].name = "Възстановено име";
   archive.people[0].overrides[0].longitude = 0.123456789;
-  await page
-    .locator("input[type=file]")
-    .setInputFiles({
-      name: "restore.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify(archive)),
-    });
+  await page.locator("input[type=file]").setInputFiles({
+    name: "restore.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(archive)),
+  });
   await expect(page.getByRole("dialog")).toBeVisible();
   await page
     .getByRole("button", { name: "Замести с данните от архива" })
@@ -262,17 +260,69 @@ test("JSON възстановяване след преглед и отказ п
     ),
   ).toBe(0.123456789);
   await page.getByRole("button", { name: "Настройки", exact: true }).click();
-  await page
-    .locator("input[type=file]")
-    .setInputFiles({
-      name: "bad.json",
-      mimeType: "application/json",
-      buffer: Buffer.from('{"version":5}'),
-    });
+  await page.locator("input[type=file]").setInputFiles({
+    name: "bad.json",
+    mimeType: "application/json",
+    buffer: Buffer.from('{"version":5}'),
+  });
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("button", { name: "Хора", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Възстановено име", exact: true }),
   ).toBeVisible();
+});
+
+test("търсенето показва конкретна грешка и се възстановява след повторен опит", async ({
+  page,
+}) => {
+  await page.route("**/api/places?*", (route) =>
+    route.fulfill({ status: 502, body: "API unavailable" }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Добави човек", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.getByPlaceholder("Потърсете град, напр. София").fill("София");
+  await expect(
+    modal.getByText("Няма връзка с изчислителния сървър.", { exact: false }),
+  ).toBeVisible();
+  await expect(modal.locator(".place-results [role=option]")).toHaveCount(0);
+  await page.unroute("**/api/places?*");
+  await modal
+    .getByRole("button", { name: "Опитай отново", exact: true })
+    .click();
+  await expect(
+    modal.getByRole("option", { name: /София България/ }),
+  ).toBeVisible();
+  const city = modal.getByPlaceholder("Потърсете град, напр. София");
+  await city.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(
+    modal.getByText("България · 42.6977°", { exact: false }),
+  ).toBeVisible();
+  await expect(modal.locator(".place-results [role=option]")).toHaveCount(0);
+  await expect(
+    modal.getByText("Няма връзка с изчислителния сървър.", { exact: false }),
+  ).toHaveCount(0);
+});
+
+test("изборът на международен град работи и без Intl.DisplayNames", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    Object.defineProperty(Intl, "DisplayNames", {
+      value: undefined,
+      configurable: true,
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Добави човек", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.getByPlaceholder("Потърсете град, напр. София").fill("Tokyo");
+  await modal.getByRole("option", { name: /Tokyo JP/ }).click();
+  await expect(modal.getByText("Asia/Tokyo", { exact: false })).toBeVisible();
+  await expect(
+    modal.getByText("Търсенето не е достъпно.", { exact: false }),
+  ).toHaveCount(0);
 });
