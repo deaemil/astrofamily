@@ -1,0 +1,9 @@
+fastapi==0.119.0
+uvicorn==0.38.0
+pyswisseph==2.10.3.2
+timezonefinder==6.5.9
+pytz==2025.2
+httpx==0.28.1
+pytest==8.4.2
+python-dotenv==1.1.1
+geonamescache==3.0.0
